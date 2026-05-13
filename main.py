@@ -6,13 +6,18 @@ Production-grade API without heavy ML dependencies for immediate deployment
 import os
 import re
 import io
+import json
+import smtplib
+from datetime import datetime, timezone
+from email.message import EmailMessage
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 import pdfplumber
 from docx import Document
@@ -56,6 +61,19 @@ class ATSScanResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+
+class ContactInquiry(BaseModel):
+    full_name: str
+    company_name: Optional[str] = ""
+    email: str
+    phone: Optional[str] = ""
+    service: str
+    message: str
+
+class ContactResponse(BaseModel):
+    status: str
+    message: str
+    inquiry_id: str
 
 # ============== Resume Parser ==============
 
@@ -364,6 +382,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+
+def _send_contact_email(inquiry: ContactInquiry, inquiry_id: str) -> bool:
+    """Send inquiry notification when SMTP environment variables are configured."""
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    recipient = os.getenv("CONTACT_RECIPIENT", "hello@brenvocore.com")
+    if not smtp_host or not smtp_user or not smtp_password:
+        return False
+
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    sender = os.getenv("CONTACT_SENDER", smtp_user)
+    msg = EmailMessage()
+    msg["Subject"] = f"New Brenvo Core inquiry: {inquiry.service}"
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg["Reply-To"] = inquiry.email
+    msg.set_content(
+        "New Brenvo Core website inquiry\n\n"
+        f"Inquiry ID: {inquiry_id}\n"
+        f"Full Name: {inquiry.full_name}\n"
+        f"Company Name: {inquiry.company_name or 'N/A'}\n"
+        f"Email: {inquiry.email}\n"
+        f"Phone: {inquiry.phone or 'N/A'}\n"
+        f"Service: {inquiry.service}\n\n"
+        f"Message:\n{inquiry.message}\n"
+    )
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.send_message(msg)
+    return True
+
 # Initialize components
 parser = ResumeParser()
 extractor = EntityExtractor()
@@ -374,6 +426,43 @@ scorer = ATSScorer()
 @app.get("/api/v1/health", response_model=HealthResponse)
 async def health():
     return HealthResponse(status="healthy", version="1.0.0")
+
+
+
+@app.post("/api/v1/contact", response_model=ContactResponse)
+async def submit_contact(inquiry: ContactInquiry):
+    if len(inquiry.full_name.strip()) < 2:
+        raise HTTPException(400, "Full name is required.")
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", inquiry.email):
+        raise HTTPException(400, "A valid email address is required.")
+    if not inquiry.service.strip():
+        raise HTTPException(400, "Service interested in is required.")
+    if len(inquiry.message.strip()) < 10:
+        raise HTTPException(400, "Please provide a message with at least 10 characters.")
+
+    inquiry_id = "BC-" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    storage_dir = Path(os.getenv("CONTACT_STORAGE_DIR", "data"))
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    record = inquiry.model_dump()
+    record.update({
+        "inquiry_id": inquiry_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "email_sent": False,
+    })
+
+    try:
+        record["email_sent"] = _send_contact_email(inquiry, inquiry_id)
+    except Exception as exc:
+        record["email_error"] = str(exc)
+
+    with (storage_dir / "contact_inquiries.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    return ContactResponse(
+        status="received",
+        message="Your inquiry has been received. Brenvo Core will respond shortly.",
+        inquiry_id=inquiry_id,
+    )
 
 @app.post("/api/v1/ats/scan", response_model=ATSScanResponse)
 async def scan_resume(
@@ -479,6 +568,23 @@ async def extract_keywords(job_description: str = Form(...)):
         'certifications': entities['certifications'],
         'keywords': entities['skills'] + entities['job_titles']
     }
+
+
+PUBLIC_FILES = {
+    "index.html", "about.html", "services.html", "contact.html",
+    "privacy.html", "terms.html", "style.css", "main.js",
+    "logo.svg", "favicon.svg", "robots.txt", "sitemap.xml",
+}
+
+@app.get("/", include_in_schema=False)
+async def serve_home():
+    return FileResponse("index.html")
+
+@app.get("/{file_name}", include_in_schema=False)
+async def serve_public_file(file_name: str):
+    if file_name not in PUBLIC_FILES:
+        raise HTTPException(404, "File not found.")
+    return FileResponse(file_name)
 
 if __name__ == "__main__":
     import uvicorn
