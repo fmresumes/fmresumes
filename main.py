@@ -9,10 +9,11 @@ import io
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 import pdfplumber
 from docx import Document
@@ -385,7 +386,9 @@ async def scan_resume(
                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                'text/plain']
     
-    if resume.content_type not in allowed:
+    filename = resume.filename or ""
+    file_ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if resume.content_type not in allowed and file_ext not in {"pdf", "doc", "docx", "txt"}:
         raise HTTPException(400, "Invalid file type. Use PDF, DOCX, or TXT.")
     
     content = await resume.read()
@@ -393,7 +396,7 @@ async def scan_resume(
         raise HTTPException(400, "File too large. Max 5MB.")
     
     # Parse resume
-    parsed = parser.parse(content, resume.filename)
+    parsed = parser.parse(content, filename)
     resume_text = parsed['text']
     
     # Extract entities
@@ -456,6 +459,13 @@ async def scan_resume(
         resume_text_preview=resume_text[:500] + "..." if len(resume_text) > 500 else resume_text
     )
 
+@app.post("/api/ats/scan", response_model=ATSScanResponse)
+async def scan_resume_legacy(
+    resume: UploadFile = File(...),
+    job_description: Optional[str] = Form(None)
+):
+    return await scan_resume(resume=resume, job_description=job_description)
+
 @app.post("/api/v1/ats/parse-resume")
 async def parse_resume(resume: UploadFile = File(...)):
     content = await resume.read()
@@ -479,6 +489,34 @@ async def extract_keywords(job_description: str = Form(...)):
         'certifications': entities['certifications'],
         'keywords': entities['skills'] + entities['job_titles']
     }
+
+# ============== Static Site Routes ==============
+
+STATIC_ROOT = Path(__file__).resolve().parent
+STATIC_FILE_ALLOWLIST = {
+    "index.html", "services.html", "pricing.html", "contact.html",
+    "ats-checker.html", "checkout.html", "early-career.html",
+    "mid-career.html", "late-career.html", "login.html",
+    "style.css", "main.js", "ats-checker.js", "favicon.png",
+    "logo.jpg", "robots.txt", "sitemap.xml",
+}
+
+@app.get("/", include_in_schema=False)
+async def serve_home():
+    return FileResponse(STATIC_ROOT / "index.html")
+
+@app.get("/{file_path:path}", include_in_schema=False)
+async def serve_static_site(file_path: str):
+    if file_path.startswith("api/"):
+        raise HTTPException(404, "API endpoint not found")
+
+    normalized = file_path.strip("/") or "index.html"
+    if normalized in STATIC_FILE_ALLOWLIST:
+        target = STATIC_ROOT / normalized
+        if target.is_file():
+            return FileResponse(target)
+
+    raise HTTPException(404, "Page not found")
 
 if __name__ == "__main__":
     import uvicorn

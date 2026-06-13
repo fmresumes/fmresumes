@@ -129,14 +129,14 @@ function initATSChecker() {
                 const formData = new FormData();
                 formData.append('resume', uploadedFile);
 
-                const response = await fetch('/api/ats/scan', {
+                const response = await fetch('/api/v1/ats/scan', {
                     method: 'POST',
                     body: formData
                 });
 
                 const data = await response.json().catch(() => null);
                 if (!response.ok) {
-                    const message = data && data.error ? data.error : 'Analysis failed. Please try again.';
+                    const message = data && (data.detail || data.error) ? (data.detail || data.error) : 'Analysis failed. Please try again.';
                     throw new Error(message);
                 }
 
