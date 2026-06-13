@@ -136,7 +136,7 @@ function initATSChecker() {
 
                 const data = await response.json().catch(() => null);
                 if (!response.ok) {
-                    const message = data && data.error ? data.error : 'Analysis failed. Please try again.';
+                    const message = data && (data.error || data.detail) ? (data.error || data.detail) : 'Analysis failed. Please try again.';
                     throw new Error(message);
                 }
 
@@ -198,10 +198,10 @@ function initATSChecker() {
         scoreBadge.className = 'badge ' + badgeClass;
         scoreBadge.textContent = badgeText;
 
-        const missing = (result.analysis && result.analysis.missing_sections) || [];
+        const missing = result.missing_keywords || (result.analysis && result.analysis.missing_sections) || [];
         if (scoreMessage) {
             if (missing.length) {
-                scoreMessage.textContent = 'Consider adding: ' + missing.join(', ') + '.';
+                scoreMessage.textContent = 'Consider adding or emphasizing: ' + missing.join(', ') + '.';
             } else {
                 scoreMessage.textContent = 'Your resume contains the core ATS sections. Nice work!';
             }
