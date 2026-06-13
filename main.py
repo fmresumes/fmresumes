@@ -371,10 +371,12 @@ keyword_matcher = KeywordMatcher()
 format_analyzer = FormattingAnalyzer()
 scorer = ATSScorer()
 
+@app.get("/api/health", response_model=HealthResponse)
 @app.get("/api/v1/health", response_model=HealthResponse)
 async def health():
     return HealthResponse(status="healthy", version="1.0.0")
 
+@app.post("/api/ats/scan", response_model=ATSScanResponse)
 @app.post("/api/v1/ats/scan", response_model=ATSScanResponse)
 async def scan_resume(
     resume: UploadFile = File(...),
@@ -385,15 +387,23 @@ async def scan_resume(
                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                'text/plain']
     
-    if resume.content_type not in allowed:
+    filename = resume.filename or ''
+    extension = filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
+    if resume.content_type not in allowed and extension not in {'pdf', 'docx', 'txt'}:
         raise HTTPException(400, "Invalid file type. Use PDF, DOCX, or TXT.")
-    
+
     content = await resume.read()
     if len(content) > 5 * 1024 * 1024:
         raise HTTPException(400, "File too large. Max 5MB.")
     
     # Parse resume
-    parsed = parser.parse(content, resume.filename)
+    try:
+        parsed = parser.parse(content, filename)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(400, "Could not read the uploaded resume. Please upload a valid PDF, DOCX, or TXT file.") from exc
+
     resume_text = parsed['text']
     
     # Extract entities
@@ -456,6 +466,7 @@ async def scan_resume(
         resume_text_preview=resume_text[:500] + "..." if len(resume_text) > 500 else resume_text
     )
 
+@app.post("/api/ats/parse-resume")
 @app.post("/api/v1/ats/parse-resume")
 async def parse_resume(resume: UploadFile = File(...)):
     content = await resume.read()
@@ -470,6 +481,7 @@ async def parse_resume(resume: UploadFile = File(...)):
         'sections_found': format_result['sections_found']
     }
 
+@app.post("/api/ats/extract-keywords")
 @app.post("/api/v1/ats/extract-keywords")
 async def extract_keywords(job_description: str = Form(...)):
     entities = extractor.extract(job_description)

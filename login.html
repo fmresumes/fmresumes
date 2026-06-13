@@ -70,12 +70,12 @@
 
     window.netlifyIdentity.on("init", user => {
       if (user) {
-        window.location.href = "/ats.html"; // change to your ATS page
+        window.location.href = "/ats-checker.html"; // change to your ATS page
       }
     });
 
     window.netlifyIdentity.on("login", () => {
-      window.location.href = "/ats.html"; // change if needed
+      window.location.href = "/ats-checker.html"; // change if needed
     });
   }
 </script>
